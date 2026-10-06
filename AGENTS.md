@@ -85,5 +85,6 @@ These come from the live API and override anything the docs suggest. Shapes only
 - Use `npm start` to run the compiled CLI.
 - Use `npm run inspect` after `npm run build` to test the MCP server with MCP Inspector (it passes `--mcp`).
 - The release workflow bumps the version; do not bump it by hand.
+- The release workflow publishes to npm with **trusted publishing** (OIDC, with provenance), so it uses no npm token. One-time setup on npmjs.com: package `@larsbaunwall/unlinked` → Settings → Trusted Publisher → GitHub Actions, organization/user `larsbaunwall`, repository `Unlinked`, workflow filename `publish-mcp.yml`, no environment. The workflow needs Node 24 (npm 11.5.1+) and `permissions: id-token: write`; do not add an `NPM_TOKEN` secret or `NODE_AUTH_TOKEN`.
 - Keep README examples short and friendly for people browsing the project on GitHub.
 - Do not commit secrets, generated tokens, local MCP client config containing tokens, or captured LinkedIn member data.
