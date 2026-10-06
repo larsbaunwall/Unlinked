@@ -7,12 +7,12 @@
     "url": "https://github.com/larsbaunwall/unlinked",
     "source": "github"
   },
-  "version": "3.0.0",
+  "version": "1.0.4",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@larsbaunwall/unlinked",
-      "version": "3.0.0",
+      "version": "1.0.4",
       "runtime": "node",
       "transport": {
         "type": "stdio"
