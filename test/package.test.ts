@@ -156,6 +156,27 @@ describe("release workflow", () => {
     assert.deepEqual(workflow.match(/^on:\n((?: {2}\S.*\n?|(?: {4,}.*)\n?)*)/m)![1]!.match(/^ {2}[a-z_]+:/gm), ["  workflow_dispatch:"]);
   });
 
+  test("publishes through npm trusted publishing: no npm token secret anywhere, and the job id-token permission is what authenticates", () => {
+    assert.doesNotMatch(workflow, /NPM_TOKEN/);
+    assert.doesNotMatch(workflow, /NODE_AUTH_TOKEN/);
+    assert.match(workflow, /permissions:\n(?: {6}.*\n)*? {6}id-token: write/);
+  });
+
+  test("runs on a Node release whose npm supports trusted publishing (npm 11.5.1+), and fails the job early if it does not", () => {
+    const nodeVersion = workflow.match(/node-version: "?(\d+)/)?.[1];
+    assert.ok(nodeVersion && Number(nodeVersion) >= 24, `node-version should be 24 or newer, found ${nodeVersion}`);
+    assert.doesNotMatch(workflow, /node-version: "?lts/);
+    const check = lines.findIndex((line) => /npm --version/.test(line));
+    const publish = lines.findIndex((line) => /npm publish/.test(line));
+    assert.ok(check !== -1 && publish !== -1 && check < publish, `npm version check line ${check}, publish line ${publish}`);
+    assert.match(workflow, /11\.5\.1/);
+  });
+
+  test("package.json's repository URL uses the exact case of the GitHub repo, which provenance verifies against the workflow identity", () => {
+    const repository = JSON.parse(text("package.json")).repository.url as string;
+    assert.equal(repository, "git+https://github.com/larsbaunwall/Unlinked.git");
+  });
+
   test("checkout does not persist credentials, and the push step passes the token itself", () => {
     assert.match(workflow, /persist-credentials: false/);
     assert.match(workflow, /extraheader=AUTHORIZATION: basic/);

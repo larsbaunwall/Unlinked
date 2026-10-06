@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # Push commits and tags
-      id-token: write # OIDC authentication with MCP Registry
+      id-token: write # OIDC: npm trusted publishing (and provenance) and MCP Registry login
 
     steps:
       - name: Checkout code
@@ -27,8 +27,16 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: "lts/*"
+          # npm trusted publishing needs npm 11.5.1+, which ships with current Node 24.
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Check npm supports trusted publishing
+        run: |
+          set -euo pipefail
+          NPM_VERSION=$(npm --version)
+          echo "npm $NPM_VERSION"
+          printf '%s\n11.5.1\n' "$NPM_VERSION" | sort -V -C -r || { echo "::error::npm $NPM_VERSION is older than 11.5.1, which trusted publishing requires"; exit 1; }
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
@@ -61,10 +69,9 @@ jobs:
           echo "::add-mask::$AUTH"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin main --follow-tags
 
+      # Authenticated by the job's OIDC identity (npm trusted publisher), so no npm token secret is used.
       - name: Publish to npm
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Install mcp-publisher
         env:
