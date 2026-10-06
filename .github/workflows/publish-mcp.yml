@@ -19,18 +19,19 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # The token is not left in .git/config for the build, test and publish steps; the push step passes it explicitly.
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "lts/*"
           registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Bump version
         run: npm version ${{ inputs.bump }} --no-git-tag-version
@@ -40,11 +41,6 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp && mv server.tmp server.json
 
-      - name: Sync version to MCP server metadata
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          sed -i "s/version: \"[0-9]*\.[0-9]*\.[0-9]*\"/version: \"$VERSION\"/" src/mcp/server.ts
-
       - name: Build
         run: npm run build
 
@@ -52,23 +48,39 @@ jobs:
         run: npm test --if-present
 
       - name: Commit, tag, and push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json server.json src/mcp/server.ts
+          git add package.json server.json
           git commit -m "chore: release v$VERSION"
           git tag "v$VERSION"
-          git push origin main --follow-tags
+          AUTH=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin main --follow-tags
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Install mcp-publisher
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          set -euo pipefail
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          FILE="mcp-publisher_${OS}_${ARCH}.tar.gz"
+          BASE="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl -fsSL -o "$FILE" "$BASE/$FILE"
+          curl -fsSL -o checksums.txt "$BASE/registry_${MCP_PUBLISHER_VERSION#v}_checksums.txt"
+          grep -F "  $FILE" checksums.txt > expected.sha256
+          test "$(wc -l < expected.sha256)" -eq 1
+          sha256sum --check --strict expected.sha256
+          tar xzf "$FILE" mcp-publisher
 
       - name: Authenticate to MCP Registry
         run: ./mcp-publisher login github-oidc

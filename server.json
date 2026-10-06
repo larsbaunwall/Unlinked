@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.larsbaunwall/unlinked",
-  "description": "MCP server that brings your LinkedIn professional profile and experience into your context.",
+  "description": "LinkedIn profile and recent changes as one up-to-date answer for your AI assistant (read-only, EEA/Switzerland).",
   "logo": "https://raw.githubusercontent.com/larsbaunwall/unlinked/main/logo.png",
   "repository": {
     "url": "https://github.com/larsbaunwall/unlinked",
@@ -17,6 +17,12 @@
       "transport": {
         "type": "stdio"
       },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "--mcp"
+        }
+      ],
       "environmentVariables": [
         {
           "name": "LINKEDIN_TOKEN",
@@ -26,8 +32,8 @@
           "format": "string"
         },
         {
-          "name": "LINKEDIN_API_VERSION",
-          "description": "LinkedIn API version in YYYYMM format (e.g. 202312). Defaults to 202312 when unset.",
+          "name": "UNLINKED_CACHE_TTL",
+          "description": "How long fetched LinkedIn data is cached in memory, e.g. 30m, 2h, 1d, or 0 to turn caching off. Defaults to 6h.",
           "isRequired": false,
           "isSecret": false,
           "format": "string"

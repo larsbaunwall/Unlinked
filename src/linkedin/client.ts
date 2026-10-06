@@ -1,11 +1,10 @@
 import {
   LINKEDIN_API_BASE_URL,
+  LINKEDIN_API_VERSION,
   type AuthorizationStatusResult,
   type ChangelogResult,
   type JsonObject,
   type LinkedInAuth,
-  type ProfileSnapshotResult,
-  type SnapshotDomain,
   type SnapshotDomainResult,
 } from "./types.js";
 
@@ -16,6 +15,9 @@ export type LinkedInClientOptions = {
   requestTimeoutMs?: number;
   /** Max retry attempts for transient failures (429 / 5xx / network errors). Defaults to 3. */
   maxRetries?: number;
+  /** Injectable clock and sleep, so retry behaviour can be tested without waiting. */
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 type PagedLinkedInResult = {
@@ -42,10 +44,15 @@ export class LinkedInApiError extends Error {
   }
 }
 
+const SNAPSHOT_MAX_PAGES = 50;
+const CHANGELOG_MAX_PAGES = 40;
+const CHANGELOG_PAGE_SIZE = 50;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 500;
 const RETRY_MAX_DELAY_MS = 8_000;
+/** Longest error text we pass on from LinkedIn (a proxy error page can be huge). */
+const MAX_MESSAGE_CHARS = 300;
 
 export class LinkedInClient {
   readonly #baseUrl: string;
@@ -53,13 +60,19 @@ export class LinkedInClient {
   readonly #fetch: typeof fetch;
   readonly #requestTimeoutMs: number;
   readonly #maxRetries: number;
+  readonly #now: () => number;
+  readonly #sleep: (ms: number) => Promise<void>;
 
   constructor({
     baseUrl = LINKEDIN_API_BASE_URL,
     fetchImpl = fetch,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     maxRetries = DEFAULT_MAX_RETRIES,
+    now = Date.now,
+    sleep = defaultSleep,
   }: LinkedInClientOptions = {}) {
+    this.#now = now;
+    this.#sleep = sleep;
     this.#baseUrl = baseUrl;
     this.#allowedHost = new URL(baseUrl).host;
     this.#fetch = fetchImpl;
@@ -67,58 +80,21 @@ export class LinkedInClient {
     this.#maxRetries = maxRetries;
   }
 
-  async getProfile({
-    accessToken,
-    apiVersion,
-    domains,
-    maxPagesPerDomain,
-  }: LinkedInAuth & {
-    domains: readonly SnapshotDomain[];
-    maxPagesPerDomain: number;
-  }): Promise<ProfileSnapshotResult> {
-    const uniqueDomains = [...new Set(domains)];
-    const domainResults = await Promise.all(
-      uniqueDomains.map((domain) =>
-        this.getSnapshotDomain({ accessToken, apiVersion, domain, maxPages: maxPagesPerDomain }),
-      ),
-    );
-    const domainsByName: Partial<Record<SnapshotDomain, unknown[]>> = {};
-    for (const result of domainResults) {
-      domainsByName[result.domain] = result.snapshotData;
-    }
-
-    return {
-      apiVersion,
-      domains: domainsByName,
-      metadata: domainResults.map(({ domain, pageCount, truncated, snapshotData }) => ({
-        domain,
-        itemCount: snapshotData.length,
-        pageCount,
-        truncated,
-      })),
-    };
-  }
-
+  /**
+   * Fetches every page of one snapshot domain. A 404 on the first page means "no data (yet)" and is
+   * reported as `empty`; a 404 on a later page just ends the data and keeps the rows fetched so far.
+   */
   async getSnapshotDomain({
     accessToken,
-    apiVersion,
     domain,
-    maxPages,
-  }: LinkedInAuth & { domain: SnapshotDomain; maxPages: number }): Promise<SnapshotDomainResult> {
-    let result: PagedLinkedInResult;
-    try {
-      result = await this.getPaged(
-        this.buildUrl("/rest/memberSnapshotData", { q: "criteria", domain }),
-        accessToken,
-        apiVersion,
-        maxPages,
-      );
-    } catch (error) {
-      if (error instanceof LinkedInApiError && error.status === 404) {
-        return { domain, snapshotData: [], rawElements: [], pageCount: 0, truncated: false };
-      }
-      throw error;
-    }
+    maxPages = SNAPSHOT_MAX_PAGES,
+  }: LinkedInAuth & { domain: string; maxPages?: number }): Promise<SnapshotDomainResult> {
+    const result = await this.getPaged(
+      this.buildUrl("/rest/memberSnapshotData", { q: "criteria", domain }),
+      accessToken,
+      maxPages,
+      { notFoundIsEmpty: true },
+    );
 
     const snapshotData = result.elements.flatMap((element) => {
       const snapshotElement = asJsonObject(element) as LinkedInSnapshotElement;
@@ -131,20 +107,23 @@ export class LinkedInClient {
       rawElements: result.elements,
       pageCount: result.pageCount,
       truncated: result.truncated,
+      empty: result.pageCount === 0,
     };
   }
 
   async getChangelog({
     accessToken,
-    apiVersion,
     startTime,
-    count,
-    maxPages,
-  }: LinkedInAuth & { startTime?: number; count: number; maxPages: number }): Promise<ChangelogResult> {
+    count = CHANGELOG_PAGE_SIZE,
+    maxPages = CHANGELOG_MAX_PAGES,
+  }: LinkedInAuth & { startTime?: number; count?: number; maxPages?: number }): Promise<ChangelogResult> {
     const result = await this.getPaged(
-      this.buildUrl("/rest/memberChangeLogs", { q: "memberAndApplication", startTime, count }),
+      this.buildUrl("/rest/memberChangeLogs", {
+        q: "memberAndApplication",
+        startTime,
+        count: Math.min(CHANGELOG_PAGE_SIZE, Math.max(1, Math.trunc(count) || 1)),
+      }),
       accessToken,
-      apiVersion,
       maxPages,
     );
     const processedAtValues = result.elements
@@ -153,7 +132,6 @@ export class LinkedInClient {
     const nextStartTime = processedAtValues.length > 0 ? Math.max(...processedAtValues) : startTime;
 
     return {
-      apiVersion,
       events: result.elements,
       ...(nextStartTime === undefined ? {} : { nextStartTime }),
       pageCount: result.pageCount,
@@ -161,17 +139,8 @@ export class LinkedInClient {
     };
   }
 
-  async getAuthorizationStatus({ accessToken, apiVersion }: LinkedInAuth): Promise<AuthorizationStatusResult> {
-    const responseJson = await this.getJson(
-      this.buildUrl("/rest/memberAuthorizations", { q: "memberAndApplication" }),
-      accessToken,
-      apiVersion,
-    );
-
-    return {
-      apiVersion,
-      ...responseJson,
-    };
+  async getAuthorizationStatus({ accessToken }: LinkedInAuth): Promise<AuthorizationStatusResult> {
+    return this.getJson(this.buildUrl("/rest/memberAuthorizations", { q: "memberAndApplication" }), accessToken);
   }
 
   private buildUrl(pathname: string, query: Record<string, string | number | undefined> = {}): URL {
@@ -184,13 +153,28 @@ export class LinkedInClient {
     return url;
   }
 
-  private async getPaged(url: URL, accessToken: string, apiVersion: string, maxPages: number): Promise<PagedLinkedInResult> {
+  /** `notFoundIsEmpty` (snapshot calls only): a 404 means "no data" / "end of data" instead of an error. */
+  private async getPaged(
+    url: URL,
+    accessToken: string,
+    maxPages: number,
+    { notFoundIsEmpty = false }: { notFoundIsEmpty?: boolean } = {},
+  ): Promise<PagedLinkedInResult> {
     const elements: unknown[] = [];
     let currentUrl: URL | undefined = url;
     let pageCount = 0;
 
     while (currentUrl && pageCount < maxPages) {
-      const responseJson = await this.getJson(currentUrl, accessToken, apiVersion);
+      let responseJson: JsonObject;
+      try {
+        responseJson = await this.getJson(currentUrl, accessToken);
+      } catch (error) {
+        // For snapshots a 404 means "nothing here": an empty first page, or simply the end of the data.
+        if (notFoundIsEmpty && error instanceof LinkedInApiError && error.status === 404) {
+          return { elements, pageCount, truncated: false };
+        }
+        throw error;
+      }
       elements.push(...asElements(responseJson));
       pageCount += 1;
       currentUrl = getNextPageUrl(responseJson, this.#baseUrl, this.#allowedHost);
@@ -203,7 +187,7 @@ export class LinkedInClient {
     };
   }
 
-  private async getJson(url: URL, accessToken: string, apiVersion: string): Promise<JsonObject> {
+  private async getJson(url: URL, accessToken: string): Promise<JsonObject> {
     // Defense in depth: never send the bearer token to a host other than the configured LinkedIn API.
     if (url.protocol !== "https:" || url.host !== this.#allowedHost) {
       throw new LinkedInApiError(
@@ -212,38 +196,64 @@ export class LinkedInClient {
       );
     }
 
+    // A token that cannot be a header value would make fetch throw an error that may quote it.
+    if (!/^[\x21-\x7E]+$/.test(accessToken)) {
+      throw new LinkedInApiError(
+        "The LinkedIn access token contains spaces, line breaks or non-ASCII characters, so it cannot be sent. Check LINKEDIN_TOKEN.",
+        0,
+      );
+    }
+    const scrub = (text: string): string => text.split(accessToken).join("[token]");
+
     let lastError: unknown;
     for (let attempt = 0; attempt <= this.#maxRetries; attempt += 1) {
       try {
         const response = await this.#fetch(url, {
           headers: {
             Authorization: `Bearer ${accessToken}`,
-            "Linkedin-Version": apiVersion,
+            "Linkedin-Version": LINKEDIN_API_VERSION,
             "Content-Type": "application/json",
           },
+          // A redirect would carry the bearer token to wherever it points; fail instead of following it.
+          redirect: "error",
           signal: AbortSignal.timeout(this.#requestTimeoutMs),
         });
-        const responseJson = await parseLinkedInResponse(response);
+        const { json: responseJson, isJson } = await parseLinkedInResponse(response);
 
         if (response.ok) {
+          if (!isJson) {
+            throw new LinkedInApiError(
+              `LinkedIn sent an unexpected response (HTTP ${response.status}, not a JSON object). Retry later.`,
+              response.status,
+              undefined,
+              getRequestId(response.headers),
+            );
+          }
           return responseJson;
         }
 
-        const message = typeof responseJson.message === "string" ? responseJson.message : response.statusText;
+        const rawMessage =
+          typeof responseJson.message === "string" && isJson ? responseJson.message : response.statusText || `HTTP ${response.status}`;
+        const message = scrub(rawMessage).slice(0, MAX_MESSAGE_CHARS);
         const serviceErrorCode =
           typeof responseJson.serviceErrorCode === "number" ? responseJson.serviceErrorCode : undefined;
+        const retryable = isRetryableStatus(response.status);
+        const delay = retryable ? getRetryDelayMs(attempt, response.headers.get("retry-after"), this.#now()) : 0;
+        // A wait longer than we are willing to sleep (a quota window) is reported instead of retried.
+        const tooLong = retryable && delay > RETRY_MAX_DELAY_MS;
+        const waitHint = tooLong ? ` Retry after about ${formatWait(delay)}.` : "";
         const apiError = new LinkedInApiError(
-          getLinkedInFailureMessage(response.status, message),
+          withWaitHint(getLinkedInFailureMessage(response.status, message), waitHint),
           response.status,
           serviceErrorCode,
           getRequestId(response.headers),
         );
 
-        if (!isRetryableStatus(response.status) || attempt === this.#maxRetries) {
+        if (!retryable || tooLong || attempt === this.#maxRetries) {
           throw apiError;
         }
         lastError = apiError;
-        await sleep(getRetryDelayMs(attempt, response.headers.get("retry-after")));
+        await this.#sleep(delay);
         continue;
       } catch (error) {
         if (error instanceof LinkedInApiError) {
@@ -253,9 +263,9 @@ export class LinkedInClient {
         lastError = error;
         if (attempt === this.#maxRetries) {
           const reason = error instanceof Error ? error.message : String(error);
-          throw new LinkedInApiError(`LinkedIn request failed: ${reason}`, 0);
+          throw new LinkedInApiError(`LinkedIn request failed: ${scrub(reason).slice(0, MAX_MESSAGE_CHARS)}`, 0);
         }
-        await sleep(getRetryDelayMs(attempt, null));
+        await this.#sleep(getRetryDelayMs(attempt, null, this.#now()));
       }
     }
     // Unreachable, but keeps the type-checker happy.
@@ -267,11 +277,16 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 408 || (status >= 500 && status < 600);
 }
 
-function getRetryDelayMs(attempt: number, retryAfterHeader: string | null): number {
-  if (retryAfterHeader) {
-    const seconds = Number(retryAfterHeader);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      return Math.min(seconds * 1000, RETRY_MAX_DELAY_MS);
+/** Milliseconds to wait before retrying. May exceed the cap when LinkedIn asks for a long wait. */
+function getRetryDelayMs(attempt: number, retryAfterHeader: string | null, now: number): number {
+  const header = retryAfterHeader?.trim();
+  if (header) {
+    if (/^\d+$/.test(header)) {
+      return Number(header) * 1000;
+    }
+    const date = Date.parse(header);
+    if (!Number.isNaN(date)) {
+      return Math.max(0, date - now);
     }
   }
   const exponential = RETRY_BASE_DELAY_MS * 2 ** attempt;
@@ -279,9 +294,16 @@ function getRetryDelayMs(attempt: number, retryAfterHeader: string | null): numb
   return Math.min(exponential + jitter, RETRY_MAX_DELAY_MS);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function formatWait(ms: number): string {
+  const seconds = Math.ceil(ms / 1000);
+  if (seconds >= 3600) {
+    const hours = Math.round(seconds / 3600);
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return seconds >= 120 ? `${Math.round(seconds / 60)} minutes` : `${seconds} seconds`;
 }
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 function asJsonObject(value: unknown): JsonObject {
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
@@ -331,15 +353,15 @@ function getLinkedInFailureMessage(status: number, message: string): string {
 
   switch (status) {
     case 400:
-      return `LinkedIn rejected the request as invalid. Check the domain, timestamp, count, or query parameters. ${message}`;
+      return `LinkedIn rejected the request as invalid. Check the requested section, timestamp, count, or query parameters. ${message}`;
     case 401:
       return `LinkedIn rejected the access token. It may be missing, expired, revoked, invalid, or malformed. ${message}`;
     case 403:
       return `LinkedIn denied access. Confirm the developer app has the Member Data Portability API (Member) product, the token has a DMA portability scope such as r_dma_portability_self_serve, and member consent is active. ${suffix} ${message}`;
     case 404:
-      return `LinkedIn could not find this API endpoint or the API is restricted for this application. ${message}`;
+      return `LinkedIn found no data for this request, or the API is restricted for this application. ${message}`;
     case 426:
-      return `LinkedIn rejected the configured API version. Try a supported LINKEDIN_API_VERSION value. ${message}`;
+      return `LinkedIn rejected the API version this tool sends. Update to the latest release. ${message}`;
     case 429:
       return `LinkedIn rate-limited the request. Retry later and reduce duplicate calls. ${message}`;
     default:
@@ -350,15 +372,26 @@ function getLinkedInFailureMessage(status: number, message: string): string {
   }
 }
 
-async function parseLinkedInResponse(response: Response): Promise<JsonObject> {
+/** `isJson` is true when the body was empty or a JSON object; HTML, arrays and scalars are not. */
+async function parseLinkedInResponse(response: Response): Promise<{ json: JsonObject; isJson: boolean }> {
   const text = await response.text();
-  if (!text) {
-    return {};
+  if (!text.trim()) {
+    return { json: {}, isJson: true };
   }
-
   try {
-    return asJsonObject(JSON.parse(text));
+    const parsed: unknown = JSON.parse(text);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { json: parsed as JsonObject, isJson: true };
+    }
   } catch {
-    return { message: text };
+    // Not JSON.
   }
+  return { json: {}, isJson: false };
+}
+
+/** Appends the wait hint on its own sentence, whether or not the message already ends with punctuation. */
+function withWaitHint(message: string, waitHint: string): string {
+  if (!waitHint) return message;
+  const trimmed = message.trimEnd();
+  return `${/[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`}${waitHint}`;
 }
