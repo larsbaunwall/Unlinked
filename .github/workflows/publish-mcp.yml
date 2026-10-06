@@ -55,6 +55,12 @@ jobs:
       - name: Test
         run: npm test --if-present
 
+      # Publish first: if npm rejects the publish, nothing has been committed, tagged or pushed.
+      # Authenticated by the job's OIDC identity (npm trusted publisher), so no npm token secret is used.
+      # Verbose logging shows the OIDC token exchange result when authentication fails.
+      - name: Publish to npm
+        run: npm publish --provenance --access public --loglevel verbose
+
       - name: Commit, tag, and push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,16 +68,12 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json server.json
+          git add package.json package-lock.json server.json
           git commit -m "chore: release v$VERSION"
           git tag -a "v$VERSION" -m "v$VERSION"
           AUTH=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
           echo "::add-mask::$AUTH"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin main --follow-tags
-
-      # Authenticated by the job's OIDC identity (npm trusted publisher), so no npm token secret is used.
-      - name: Publish to npm
-        run: npm publish --provenance --access public
 
       - name: Install mcp-publisher
         env:
