@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "Version bump type"
+        description: "Version bump type (none: only publish the current version to the MCP Registry)"
         required: true
         default: patch
         type: choice
-        options: [patch, minor, major]
+        options: [patch, minor, major, none]
 
 jobs:
   release:
@@ -42,26 +42,32 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Bump version
+        if: inputs.bump != 'none'
         run: npm version ${{ inputs.bump }} --no-git-tag-version
 
       - name: Sync version to server.json
+        if: inputs.bump != 'none'
         run: |
           VERSION=$(node -p "require('./package.json').version")
           jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp && mv server.tmp server.json
 
       - name: Build
+        if: inputs.bump != 'none'
         run: npm run build
 
       - name: Test
+        if: inputs.bump != 'none'
         run: npm test --if-present
 
       # Publish first: if npm rejects the publish, nothing has been committed, tagged or pushed.
       # Authenticated by the job's OIDC identity (npm trusted publisher), so no npm token secret is used.
       # Verbose logging shows the OIDC token exchange result when authentication fails.
       - name: Publish to npm
+        if: inputs.bump != 'none'
         run: npm publish --provenance --access public --loglevel verbose
 
       - name: Commit, tag, and push
+        if: inputs.bump != 'none'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -86,7 +92,7 @@ jobs:
           BASE="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
           curl -fsSL -o "$FILE" "$BASE/$FILE"
           curl -fsSL -o checksums.txt "$BASE/registry_${MCP_PUBLISHER_VERSION#v}_checksums.txt"
-          grep -F "  $FILE" checksums.txt > expected.sha256
+          awk -v f="$FILE" '$2 == f' checksums.txt > expected.sha256
           test "$(wc -l < expected.sha256)" -eq 1
           sha256sum --check --strict expected.sha256
           tar xzf "$FILE" mcp-publisher
