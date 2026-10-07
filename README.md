@@ -172,7 +172,7 @@ See [AGENTS.md](AGENTS.md) for implementation guidance.
 
 **Use of Unlinked is at your sole risk and responsibility.**
 
-Unlinked is provided "as is" and "as available", without warranty of any kind, express or implied. It is an independent, unofficial open-source project. It is not affiliated with, endorsed by, or sponsored by the developer.
+Unlinked is provided "as is" and "as available", without warranty of any kind, express or implied. It is an independent, unofficial open-source project. It is not affiliated with, endorsed by, or sponsored by LinkedIn, GitHub, or Microsoft.
 
 By installing or using Unlinked, you accept that:
 
