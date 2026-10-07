@@ -13,6 +13,8 @@ LinkedIn's data export can lag behind what you just did. Unlinked also reads you
 
 > :eu: **EEA / Switzerland only.** LinkedIn's Member Data Portability API is currently available only to members located in the European Economic Area and Switzerland. Thank you, Digital Markets Act (DMA)!
 
+> :warning: **Use at your own risk.** You use Unlinked entirely on your own responsibility. See the [Disclaimer](#disclaimer).
+
 ## Quickstart
 
 You need Node.js 22+ and a [member access token](https://learn.microsoft.com/en-us/linkedin/dma/member-data-portability/member-data-portability-member/?view=li-dma-data-portability-2025-11#getting-an-access-token) from the LinkedIn OAuth Token Generator (it requires a LinkedIn Developer app with the **Member Data Portability API (Member)** product).
@@ -165,6 +167,21 @@ npm run inspect          # try the MCP server in MCP Inspector (build first)
 ```
 
 See [AGENTS.md](AGENTS.md) for implementation guidance.
+
+## Disclaimer
+
+**Use of Unlinked is at your sole risk and responsibility.**
+
+Unlinked is provided "as is" and "as available", without warranty of any kind, express or implied. It is an independent, unofficial open-source project. It is not affiliated with, endorsed by, or sponsored by the developer.
+
+By installing or using Unlinked, you accept that:
+
+- **You are solely responsible** for how you use it and for everything that follows from that use. This includes your LinkedIn access token and its storage, the data you retrieve, the local cache on your machine, and the AI assistants, MCP clients, and third-party services you give that data to.
+- **You are responsible for compliance** with LinkedIn's terms, policies, and API product terms, with applicable laws (including data protection law such as the GDPR), and with the terms of any AI assistant or service you connect. Your LinkedIn account and API access may be limited, suspended, or terminated by LinkedIn.
+- **You bear all risk** of loss, damage, or harm of any kind, including loss or exposure of data, account restrictions, incorrect or outdated output, and actions taken by AI assistants based on that output.
+- **The developer and contributors accept no liability** and, to the fullest extent permitted by law, disclaim all liability for any claim, damage, or loss, whether direct, indirect, incidental, special, consequential, or otherwise, and whether in contract, tort, or otherwise, arising from or in connection with Unlinked or its use. You release them from any such claim and agree to indemnify and hold them harmless against any claim brought by a third party that arises from your use of Unlinked.
+
+Nothing in this notice limits any liability that cannot be excluded under applicable law. This notice supplements the [MIT License](LICENSE), which also applies.
 
 ## License
 
